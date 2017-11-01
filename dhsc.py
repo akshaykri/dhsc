@@ -9,7 +9,6 @@ class DHSC(object):
     """
 
     def __init__(self, params={}):
-        self.params = params
         self.N = params.get("N", 10) # number of sites
         self.W = params.get("W", 5) #disorder strength -W to W
         self.BC = params.get("BC", 'open') #boundary condition
@@ -20,6 +19,8 @@ class DHSC(object):
         self.seed = params.get("seed", 1)
         np.random.seed(self.seed)
         self.h_dis = params.get("h_dis", self.W*2*(np.random.rand(self.N)-0.5))
+        self.params = {"N": self.N, "W": self.W, "BC": self.BC, "Sz": self.Sz, "matrixType": 
+            self.matrixType, "seed": self.seed, "h_dis" : self.h_dis}
 
     def make_hamiltonian(self):
         f = self.h_dis
@@ -94,20 +95,22 @@ class DHSC(object):
         if self.matrixType == 'dense':
             self.H = np.array(self.H.todense())
 
-    def diagonalize(self):
+    def diagonalize(self, E=None, k=6):
         if self.matrixType == 'dense':
             self.evals, self.evecs = np.linalg.eigh(self.H)
         if self.matrixType == 'sparse':
-            self.evals, self.evecs = np.linalg.eigh(np.array(self.H.todense()))
+            self.evals, self.evecs = scipy.sparse.linalg.eigsh(self.H, k=k, sigma=E)
 
     def basis_change(self):
-        """change the site Hamiltonians from the decimal (Sz) basis to the eigen basis"""
+        """change the site Hamiltonians from the decimal (Sz) basis to the eigen basis
+        Use only in the dense case"""
         self.HsiteUDU = [np.zeros((self.dimH, self.dimH)) for cnt in np.arange(self.N)]
         for cnt in np.arange(self.N):
             self.HsiteUDU[cnt] = np.array(np.dot(self.evecs.T, self.Hsite[cnt].dot(self.evecs)))
 
     def get_rho0(self):
-        """Find the initial density matrix \rho_L(T = 0) tensor \rho_R(T = inf)"""
+        """Find the initial density matrix \rho_L(T = 0) tensor \rho_R(T = inf)
+        Use only in the dense case"""
         paramsLeft = self.params
         paramsLeft['N'] = self.N/2
         if paramsLeft['N']%2 == 1:
@@ -136,18 +139,69 @@ class DHSC(object):
         self.rhov = rho/len(vRight)
 
         # now do a basis change to the eigen basis
-        self.rho0 = (np.dot(self.evecs.T, np.dot(self.rhov, self.evecs)))
+        self.state0 = (np.dot(self.evecs.T, np.dot(self.rhov, self.evecs)))
 
-    def siteenergy(self, rho0, t):
-        """find <E_n> = Tr[\rho(t) H_n]"""
-        """rho0 is in the eigen basis, not in the decimal (Sz) basis"""
-        phases = np.exp(1j*self.evals[:, np.newaxis]*t)
-        rho_t = np.einsum('it,ij,jt->ijt', phases.conj(), rho0, phases, optimize=True)#np.dot(phases.conj().T, np.dot(rho0, phases))
-        En_t = np.zeros((self.N, len(t)), dtype='complex')
-        for cnt in np.arange(self.N):
-            En_t[cnt, :] = np.tensordot(rho_t, self.HsiteUDU[cnt], axes=((0,1), (1,0)))
-            #np.sum(self.HsiteUDU*rho_t.T) # Tr[AB] = A_ij B_ji
+    def siteenergy(self, state0, t):
+        """find <E_n> = Tr[\rho(t) H_n]
+        state0 is a density matrix in the eigen basis, not in the decimal (Sz) basis if dense,
+        state0 is a vector in the decimal (Sz) basis if sparse"""
+        if self.matrixType == 'dense':
+            phases = np.exp(1j*self.evals[:, np.newaxis]*t)
+            rho_t = np.einsum('it,ij,jt->ijt', phases.conj(), state0, phases, optimize=True)
+            En_t = np.zeros((self.N, len(t)+1), dtype='complex')
+            for cnt in np.arange(self.N):
+                En_t[cnt, :len(t)] = np.tensordot(rho_t, self.HsiteUDU[cnt], axes=((0,1), (1,0)))
+                #np.sum(self.HsiteUDU*rho_t.T) # Tr[AB] = A_ij B_ji
+                En_t[cnt, -1] = np.sum(np.diag(state0)*np.diag(self.HsiteUDU[cnt]))    
+
+        if self.matrixType == 'sparse':
+            En_t = np.zeros((self.N, len(t)), dtype='complex')
+            for i, tim in enumerate(t):
+                if tim == 0: vt = state0 
+                else:
+                    Ht = scipy.sparse.linalg.expm(1j*tim*self.H)
+                    vt = Ht.dot(state0)
+                for cnt in np.arange(self.N):
+                    En_t[cnt,i] = np.dot(vt.conj().T, self.Hsite[cnt].dot(vt))
+
         return np.real(En_t) # is a self.N x t matrix
+
+    def get_psi0(self):
+        """find an initial state that is the ground state on the left and
+        in the middle of the spectrum on the right"""
+        paramsLeft = self.params
+        paramsLeft['N'] = self.N/2
+        if paramsLeft['N']%2 == 1:
+            paramsLeft['nUp'] = 1
+        paramsLeft['h_dis'] = self.h_dis[:self.N/2]
+
+        dLeft = DHSC(paramsLeft)
+        dLeft.make_hamiltonian()
+        dLeft.diagonalize()
+        psiL = dLeft.evecs[:,0]
+
+        paramsRight = self.params
+        paramsRight['N'] = self.N - dLeft.N
+        paramsRight['nUp'] = self.nUp - dLeft.nUp
+        paramsRight['h_dis'] = self.h_dis[self.N/2:]
+
+        dRight = DHSC(paramsRight)
+        dRight.make_hamiltonian()
+        dRight.diagonalize(E=0, k=1)
+        psiR = dRight.evecs[:,0]
+
+        vLeft = dLeft.vechspace() # decimal states in left Hilbert space (eg. 3,5,6,9,10,12 for N=4)
+        vRight = dRight.vechspace() #(eg. 3,5,6,9,10,12)
+        vAll = self.vechspace() #(eg. a vector of 70 states: 15, 23, ..., 232, 240)
+
+        v0 = np.zeros(self.dimH)
+
+        for i1, n1 in enumerate(vLeft):
+            for i2, n2 in enumerate(vRight):
+                ind = np.where(vAll == n2*2**(dLeft.N) + n1)[0][0]
+                v0[ind] = psiL[i1]*psiR[i2]
+
+        self.state0 = v0
 
     def vechspace(self, N=None, n=None):
         """Return the decimal representations of all vectors in the relevant Hilbert space"""
@@ -181,12 +235,12 @@ class DHSC(object):
             return 0
 
     def E_exp_psi(self, v):
-        """Return the site-resolved energy density for any pure state |\psi > 
-        (vectorized and site-resolved version of m_element)"""
-        # the vector v is the list of coefficients in the Sz basis
+        """Return the energy for any pure state |\psi > 
+        the vector v is the list of coefficients in the Sz basis""" 
         return np.dot(v.T, np.dot(self.H,v))
 
     def r_avg(self, E=0.5, dE=0.05):
+        """return the Huse-Oganesyan r value of the eigenvalue spectrum"""
         evs = (self.evals - self.evals[0])/(self.evals[-1] - self.evals[0])
         E_target = evs[evs > E-dE][evs[evs > E-dE] < E+dE]
         delta = E_target[1:]-E_target[:-1]
@@ -194,47 +248,23 @@ class DHSC(object):
         return np.mean(r)
 
 if __name__ == "__main__":
-    for cW, W in enumerate([0.5, 2.5, 8]):
-        tsc = np.array([0, 1, 5, 100, 1000])#np.arange(101)
-        N = 16
-        Niter = 1
-        Esc_all = np.zeros((N, len(tsc)))
-        for cnts in (np.arange(Niter)+1):
-            params = {"N": N, "Sz": 0, "W": W, "seed": cnts, "matrixType": 'sparse'}
-            d1 = DHSC(params)
-            t1 = time.time()
-            d1.make_hamiltonian()
-            t2 = time.time()
-            #d1.diagonalize()
-            t3 = time.time()
-            #d1.basis_change()
-            t4 = time.time()
-            #d1.get_rho0()
-            t5 = time.time()
-            #Emin = d1.evals[0]; Emax = d1.evals[-1]
-            #t = 2*np.pi*tsc/(Emax-Emin)
-            t6 = time.time()
-            #Ent = d1.siteenergy(d1.rho0, t)
-            t7 = time.time()
-            #Esc = (d1.N*Ent - Emin)/(Emax-Emin)
-            #Esc_all += Esc
-            #if cnts%20 == 0: print("{0:d} : {1:.3f}".format(cnts, t7-t1))
-            print("make H: {0:.3f}, diag: {1:.3f}, basis: {2:.3f}, rho: {3:.3f}, evolve: {4:.3f}".format(t2-t1, t3-t2, t4-t3, t5-t4, t7-t6))
-
-        Esc_all = Esc_all/Niter
-        """
-        plt.figure(cW)
-        plt.plot(np.arange(N)+1, Esc_all)
-        plt.xlim(0.5, N+0.5)
-        plt.ylim(-0.1, 0.6)
-        plt.xlabel(r'Site index')
-        plt.ylabel(r'$ \langle \epsilon_n \rangle = \frac{N \langle E_n \rangle - E_{min}}{E_{max}- E_{min}}$')
-        labels = []
-        for t in tsc:
-            if t%1 == 0: labels.append(r'$\tilde{t} = '+r'{0:d}$'.format(int(t)))
-            else: labels.append(r'$\tilde{t} = '+r'{0:.2f}$'.format(t))
-        plt.legend(labels=labels, loc='best', fontsize=12)
-        plt.title(r'Energy as a function of $\tilde{t} = \frac{t (E_{max} - E_{min})}{2 \pi \hbar}$')
-        plt.tight_layout()
-        #plt.savefig('N12_{0:02.0f}_1000.pdf'.format(10*W))
-        """
+    # test only
+    tsc = np.array([0,1,2,5,10,100])
+    params = {"N": N, "Sz": 0, "W": W, "seed": cnts, "matrixType": 'sparse'}
+    d1 = DHSC(params)
+    t1 = time.time()
+    d1.make_hamiltonian()
+    t2 = time.time()
+    d1.diagonalize()
+    t3 = time.time()
+    d1.basis_change()
+    t4 = time.time()
+    d1.get_rho0()
+    t5 = time.time()
+    Emin = d1.evals[0]; Emax = d1.evals[-1]
+    t = 2*np.pi*tsc/(Emax-Emin)
+    t6 = time.time()
+    Ent = d1.siteenergy(d1.state0, t)
+    t7 = time.time()
+    Esc[cnts-1, :,:] = (d1.N*Ent - Emin)/(Emax-Emin)
+    print("make H: {0:.3f}, diag: {1:.3f}, basis: {2:.3f}, rho: {3:.3f}, evolve: {4:.3f}".format(t2-t1, t3-t2, t4-t3, t5-t4, t7-t6))
