@@ -1,6 +1,8 @@
 import numpy as np
 import time
 import scipy
+import scipy.misc
+import scipy.sparse
 import matplotlib.pyplot as plt
 
 class DHSC(object):
@@ -239,13 +241,15 @@ class DHSC(object):
         the vector v is the list of coefficients in the Sz basis""" 
         return np.dot(v.T, np.dot(self.H,v))
 
-    def r_avg(self, E=0.5, dE=0.05):
-        """return the Huse-Oganesyan r value of the eigenvalue spectrum"""
+    def r_avg(self, E=None, dE=None):
+        """return the Huse-Oganesyan r value of the eigenvalue spectrum,
+        E and dE refer to ranges of the raw eigenvalues"""
         evs = (self.evals - self.evals[0])/(self.evals[-1] - self.evals[0])
-        E_target = evs[evs > E-dE][evs[evs > E-dE] < E+dE]
+        if E==None: E_target = evs
+        else: E_target = evs[evs > E-dE][evs[evs > E-dE] < E+dE]
         delta = E_target[1:]-E_target[:-1]
         r = np.minimum(delta[1:]/delta[:-1], delta[:-1]/delta[1:])
-        return np.mean(r)
+        return (np.mean(r), len(E_target))
 
 if __name__ == "__main__":
     # test only
