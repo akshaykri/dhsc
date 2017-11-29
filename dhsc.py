@@ -251,6 +251,37 @@ class DHSC(object):
         r = np.minimum(delta[1:]/delta[:-1], delta[:-1]/delta[1:])
         return (np.mean(r), len(E_target))
 
+    def get_dsf(self):
+        """return the dynamical spin fraction (Pal-Huse eq. (6) / Luitz et al eq. (A3))"""
+        if not hasattr(self, 'dsf'):
+            if not hasattr(self, 'allvecs'): self.allvecs = self.vechspace()
+            v_z = np.zeros((self.dimH, self.N))
+            for cnt in np.arange(self.dimH):
+                v_z[cnt,:] = (self.dec2spin(self.allvecs[cnt])) - 0.5 # +/- 1/2 for spin up/down
+            phase = np.exp(2j*np.pi*(np.arange(self.N)+1)/self.N)
+            nMn = np.einsum('in, m, im -> n', np.abs(self.evecs)**2, phase, v_z, optimize=True)
+            phase2 = phase[:, np.newaxis].conj() * phase
+            nMn2 = np.einsum('in, lm, im, il -> n', np.abs(self.evecs)**2, phase2, v_z, v_z, optimize=True)
+            self.dsf = np.real(1 - np.abs(nMn)**2/nMn2)
+
+    def get_a1(self):
+        """return the participation coefficient a_1 (Luitz Fig. 1): 
+        a_1 = -(\sum_i |\psi_i|^2 \ln |\psi_i|^2) / \ln N (= 1 for ergodic, 0 for localized)"""
+        if not hasattr(self, 'a1'):
+            self.a1 = -np.sum(np.abs(self.evecs)**2 * np.log(np.abs(self.evecs)**2), axis=0) / np.log(self.dimH)
+
+    def get_EE(self):
+        """get the bipartite entanglement entropy for the eigenstates"""
+        if not hasattr(self, 'EE'):
+            n_eig = self.evecs.shape[1]
+            if not hasattr(self, 'allvecs'): self.allvecs = self.vechspace()
+            self.EE = np.zeros(n_eig)
+            for cnt in np.arange(n_eig):
+                C = np.zeros(2**(self.N))
+                C[self.allvecs] = self.evecs[:,cnt]
+                _, s, _ = np.linalg.svd(C.reshape(2**(self.N/2), 2**(self.N/2)))
+                self.EE[cnt] = -np.sum(np.abs(s)**2 * np.log(np.abs(s)**2))
+
 if __name__ == "__main__":
     # test only
     tsc = np.array([0,1,2,5,10,100])

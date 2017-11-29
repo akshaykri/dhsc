@@ -9,7 +9,7 @@ from dhsc import DHSC
 
 
 class Simulation(object):
-    """Encapsulates everything we need to simulate LLL with disorder / deltas
+    """Encapsulates everything we need to simulate the Disordered Heisenberg Spin Chain
     """
 
     def __init__(self, params = {}):
