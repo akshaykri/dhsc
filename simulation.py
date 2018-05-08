@@ -74,7 +74,7 @@ class Simulation(object):
         for cnt in np.arange(len(self.Esc_mean[0,:])):
             plt.errorbar(np.arange(self.N)+1, self.Esc_mean[:,cnt], yerr=self.Esc_stderr[:,cnt])
         plt.xlim(0.5, self.N+0.5)
-        plt.ylim(-1, 2)
+        plt.ylim(-0.1, 0.6)
         plt.xlabel(r'Site index')
         plt.ylabel(r'$ \langle \epsilon_n \rangle = \frac{N \langle E_n \rangle - E_{min}}{E_{max}- E_{min}}$')
         labels = []
@@ -85,6 +85,7 @@ class Simulation(object):
         plt.legend(labels=labels, loc='best', fontsize=12)
         plt.title(r'Energy as a function of $\tilde{t} = \frac{t (E_{max} - E_{min})}{2 \pi \hbar}$')
         plt.tight_layout()
+        plt.savefig(self.savdir+'/N{0:d}/W{1:02.0f}_Et.pdf'.format(self.N, 10*self.W))
 
 def script_args(argv):
     # read in parameters
