@@ -66,7 +66,7 @@ class MPO(object):
     def act_on_MPS(self, mpsobj):
         """act this MPO on an MPS to return another MPS object"""
         try:
-            assert self.N == mpoobj.N
+            assert self.N == mpsobj.N
             mpsret = MPS({'N': mpsobj.N, 'p': mpsobj.p, 'chi': mpsobj.chi * self.chio})
             for c in np.arange(self.N):
                 P = np.einsum('cdst, tab -> scadb', self.W[c], mpsobj.M[c], optimize='True')
@@ -80,39 +80,68 @@ class MPO(object):
         except AssertionError:
             print("Number of tensors not compatible")
 
-    def get_GS(self, params={'chi': 10}):
+    def get_GS(self, params={'chi': 10}, nsweep=10):
         """find the ground state of the MPO with the given parameters"""
 
         MGS = MPS({'N': self.N, 'p': self.p, 'chi': params['chi']})
         MGS.rand_init()
-        MGS.left_canonialize()
+        MGS.left_canonicalize()
         MGS.right_canonicalize()
 
         R = []
-        R.append(np.array([[[1]]]))
-        for c in np.arange(self.N-1, 0, -1):
+        R.append(np.array([[[1]]])) # R_{N-1} is trivial
+        for c in np.arange(self.N-1, 0, -1): # pre-pend R_{N-2} thru R_0
             R.insert(0, np.einsum('abc, ebst, sda, tfc -> def', 
-                R[0], self.W[c], MGS[c], MGS[c], optimize='True'))
+                R[0], self.W[c], MGS.M[c], MGS.M[c], optimize=True))
 
-        L = []
-        L.append(np.array([[[1]]]))
+        lamball = []
+        
         for it in np.arange(nsweep):
 
             #sweep right
-            for lc in np.arange(self.N):
-                OP = np.einsum('abd, bfst, efh -> tdhsae', L[lc], self.W[lc], R[lc], optimize='True')
+            L = [] 
+            L.append(np.array([[[1]]])) # L_0 is trivial
+            for lc in np.arange(self.N-1):
+                OP = np.einsum('abd, bfst, efh -> tdhsae', L[lc], self.W[lc], R[lc], optimize=True)
                 L1, L2, L3, L4, L5, L6 = OP.shape
-                OP.reshape(L1*L2*L3, L4*L5*L6)
-                lamb, mat = scipy.sparse.linalg.eigsh(..., which='SA', k=1)
-                # convert to sparse
-                # take first eigenvector only
-                Q, R = np.linalg.qr(mat.reshape(...))
-                MGS.M[lc] = Q.reshape(L4, L5, L6)
-                if lc < self.N - 1:
-                    MGS.M[lc+1] = np.einsum('il, jlk -> jik', R, MGS.M[s+1], optimize=True)
+                
+                lamb, mat = scipy.sparse.linalg.eigsh(scipy.sparse.csr_matrix(
+                    OP.reshape(L1*L2*L3, L4*L5*L6)), which='SA', k=1,
+                    v0=MGS.M[lc].reshape(L4*L5*L6) )
+
+                q, r = np.linalg.qr(mat[:,0].reshape(L4*L5, L6))
+                MGS.M[lc] = q.reshape(L4, L5, L6)
+
+                if lc < self.N - 1: # this condition is always true by the limits of the for loop
+                    MGS.M[lc+1] = np.einsum('il, jlk -> jik', r, MGS.M[lc+1], optimize=True)
+                MGS.left_can = lc
+                if lc > MGS.right_can-2: MGS.right_can = np.minimum(lc+2, MGS.N)
+
                 L.append(np.einsum('abc, best, sad, tcf -> def', 
-                    L[lc], self.W[c], MGS[c], MGS[c], optimize='True'))
+                    L[lc], self.W[lc], MGS.M[lc], MGS.M[lc], optimize=True)) # append L_c for lc=1 thru N-1
+                lamball.append(lamb[0])
 
             #sweep left
+            R = []
+            R.append(np.array([[[1]]])) # R_{N-1} is trivial
+            for lc in np.arange(self.N-1, 0, -1):
+                OP = np.einsum('abd, bfst, efh -> tdhsae', L[lc], self.W[lc], R[0], optimize=True)
+                L1, L2, L3, L4, L5, L6 = OP.shape #L4 = d, L5 = chiL, L6 = chiR
+                
+                lamb, mat = scipy.sparse.linalg.eigsh(scipy.sparse.csr_matrix(
+                    OP.reshape(L1*L2*L3, L4*L5*L6)), which='SA', k=1,
+                    v0=MGS.M[lc].reshape(L4*L5*L6) )
 
+                q, r = np.linalg.qr(mat[:,0].reshape(L4, L5, L6).transpose(0,2,1).reshape(L4*L6, L5))
+                MGS.M[lc] = q.reshape(L4, L6, L5).transpose((0, 2, 1))
+                if lc > 0: #always satisfied because of how the for loop is defined
+                    MGS.M[lc-1] = np.einsum('il, jkl -> jki', r, MGS.M[lc-1], optimize=True)
+                MGS.right_can = lc
+                if lc < MGS.left_can+2: MGS.left_can = np.maximum(lc-2, -1)
 
+                R.insert(0, np.einsum('abc, ebst, sda, tfc -> def', 
+                    R[0], self.W[lc], MGS.M[lc], MGS.M[lc], optimize=True)) # append R_c for lc=N-2 thru 0
+
+                lamball.append(lamb[0])
+
+        return (MGS, lamball)
