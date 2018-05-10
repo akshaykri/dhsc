@@ -10,19 +10,19 @@ class MPS(object):
 
     def __init__(self, params={}):
         self.N = params.get("N", 20) #number of sites
-        self.p = params.get("N", 2) #dimension of local Hilbert space
+        self.p = params.get("p", 2) #dimension of local Hilbert space
         self.chi = params.get("chi", 10) #bond dimension
         self.rand_seed = params.get("rand_seed", 1) #seed for random number generator
         #self.normalized = False
         #self.canonical = False
         self.M = [] # list of MPS tensors
 
-        self.rand_init() #initialize the MPS tensors randomly
+    def rand_init(self):
+        """Initialize the MPS with random tensors of the appropriate dimension"""
+
         self.left_can = -1 #left canonicalized to this site index ...
         self.right_can = self.N #right canonicalized from this site index ...
 
-    def rand_init(self):
-        """Initialize the MPS with random tensors of the appropriate dimension"""
         np.random.seed(self.rand_seed)
         for s in np.arange(self.N):
             if s == 0:
@@ -64,7 +64,7 @@ class MPS(object):
         try:
             I = np.array([[1.0]])
             for cnt in np.arange(0, self.left_can+1):
-                I = np.einsum('ij, pia, pjb -> ab', I, self.M[cnt], self.M[cnt])
+                I = np.einsum('ij, pia, pjb -> ab', I, self.M[cnt], self.M[cnt], optimize=True)
                 assert(np.max(np.abs(I - np.eye(I.shape[0], I.shape[1])))) < 1e-10
         except AssertionError:
             print("Left canonicalization failed at {0:d}th site".format(cnt))
@@ -74,7 +74,7 @@ class MPS(object):
         try:
             I = np.array([[1.0]])
             for cnt in np.arange(self.N-1, self.right_can-1, -1):
-                I = np.einsum('ij, pai, pbj -> ab', I, self.M[cnt], self.M[cnt])
+                I = np.einsum('ij, pai, pbj -> ab', I, self.M[cnt], self.M[cnt], optimize=True)
                 assert(np.max(np.abs(I - np.eye(I.shape[0], I.shape[1])))) < 1e-10
         except AssertionError:
             print("Right canonicalization failed at {0:d}th site".format(cnt))
@@ -95,22 +95,29 @@ class MPS(object):
         assert np.abs(np.sum(np.abs(S)**2) - 1) < 1e-10
         return -np.sum(np.abs(S)**2 * np.log(np.abs(S)**2))
 
+    def inner_product(self, mpsobj):
+        """return a scalar result for the inner product between this MPS and another"""
+        try:
+            assert self.N == mpsobj.N
+            C = np.array([[1]])
+            for c in np.arange(self.N):
+                C = np.einsum('ab, sap, sbq -> pq', C, self.M[c], mpsobj.M[c], optimize=True)
+            return C[0,0]
 
-    def make_canonical(self):
-        #self.canonical = True
-        return 0
-
-    def conjugate(self):
-        #return a bra version of the ket
-        MPSbra = MPS() 
-
-    def normalize(self):
-        #self.normalized = True
-        norm = self.inner_product(self)
-
-        return 0
-
-    def inner_product(self, bra):
-        #return a scalar < bra | self >
+        except AssertionError:
+            print("Number of tensors not compatible")
         
-        return 0
+    def expectation_val(self, mpoobj):
+        """return the quadratic form of an MPS between an MPO"""
+        try:
+            assert self.N == mpoobj.N
+            C = np.array([[[1]]])
+            for c in np.arange(self.N):
+                C = np.einsum('abc, sad, best, tcf -> def', C, self.M[c], mpoobj.W[c], self.M[c],
+                    optimize=True)
+            return C[0, 0, 0]
+
+        except AssertionError:
+            print("Number of tensors not compatible")
+
+        
