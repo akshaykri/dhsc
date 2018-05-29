@@ -16,6 +16,17 @@ class MPS(object):
         #self.normalized = False
         #self.canonical = False
         self.M = [] # list of MPS tensors
+        self.make_Pauli()
+
+    def make_Pauli(self):
+        """define some useful matrices"""
+        I = np.array([[1, 0], [0, 1]])
+        Sx = np.array([[0, 0.5], [0.5, 0]])
+        Sz = np.array([[0.5, 0], [0, -0.5]])
+        Sp = np.array([[0, 1], [0, 0]])
+        Sm = np.array([[0, 0], [1, 0]])
+
+        self.Pauli = {"I": I, "Sz": Sz, "Sx": Sx, "Sp": Sp, "Sm": Sm}
 
     def rand_init(self):
         """Initialize the MPS with random tensors of the appropriate dimension"""
@@ -31,6 +42,36 @@ class MPS(object):
                 self.M.append(np.random.randn(self.p, self.chi, 1))
             else:
                 self.M.append(np.random.randn(self.p, self.chi, self.chi))
+
+    def prod_init(self, thetas=None, eiphi=None):
+        """Initialize the MPS in a product state (unentangled state) with 
+        default: each spin distributed uniformly on the Bloch sphere, with phi=0 or pi"""
+
+        self.left_can = -1 #left canonicalized to this site index ...
+        self.right_can = self.N #right canonicalized from this site index ...
+
+        if thetas is None:
+            thetas = np.random.rand(self.N) * np.pi
+
+        if eiphi is None:
+            eiphi = 1 - 2*np.random.randint(2, size=self.N)
+
+        for s in np.arange(self.N):
+
+            if s == 0:
+                Mtemp = np.zeros((self.p, 1, self.chi))       
+            elif s == self.N-1:
+                Mtemp = np.zeros((self.p, self.chi, 1))
+            else:
+                Mtemp = np.zeros((self.p, self.chi, self.chi))
+
+            Mtemp[0,0,0] = np.cos(0.5*thetas[s])
+            Mtemp[1,0,0] = np.sin(0.5*thetas[s]) * eiphi[s]
+            self.M.append(Mtemp)
+
+    def prod_init_z(self):
+        """Initialize the MPS with all spins aligned along +z"""
+        self.prod_init(thetas=np.zeros(self.N))
 
     def left_canonicalize(self, Lmax=None):
         """Left canonicalize the MPS up to (and including) the Lmax^th site"""
@@ -60,6 +101,7 @@ class MPS(object):
     def check_canonicalization(self):
         """Check if orthonormality relations for tensors hold up"""
 
+        flag = 0
         #for left canonicalization
         try:
             I = np.array([[1.0]])
@@ -68,7 +110,7 @@ class MPS(object):
                 assert(np.max(np.abs(I - np.eye(I.shape[0], I.shape[1])))) < 1e-10
         except AssertionError:
             print("Left canonicalization failed at {0:d}th site".format(cnt))
-            return
+            flag = -1
 
         #for right canonicalization
         try:
@@ -78,22 +120,44 @@ class MPS(object):
                 assert(np.max(np.abs(I - np.eye(I.shape[0], I.shape[1])))) < 1e-10
         except AssertionError:
             print("Right canonicalization failed at {0:d}th site".format(cnt))
-            return
+            flag = -1
 
-        print("Verified left canonicalized to the {0:d}th site and right canonicalized from the {1:d}th site"
+        #for normalization
+        try:
+            if self.left_can < self.N - 1:
+                I = np.eye(self.M[self.left_can+1].shape[1], self.M[self.left_can+1].shape[1]) # np.array([[1.0]])
+                for cnt in np.arange(self.left_can+1, self.right_can, 1):
+                    I = np.einsum('ij, pia, pjb -> ab', I, self.M[cnt], self.M[cnt], optimize=True)
+                assert(np.abs(np.trace(I) - 1)) < 1e-10
+
+        except AssertionError:
+            print("Normalization failed")
+            flag = -1
+
+        if flag == 0:
+            print("Verified left canonicalized to the {0:d}th site and right canonicalized from the {1:d}th site and normalized"
             .format(self.left_can, self.right_can))
+
+
+    def normalize(self, n):
+        """Normalize the MPS"""
+        
+
+        self.left_canonicalize(n-1)
+        self.right_canonicalize(n+1)
+        norm = np.sum(self.M[n] ** 2)
+        self.M[n] = self.M[n] / np.sqrt(norm)
+
 
     def get_EE(self, n=None):
         """Calculate the entanglement entropy of the spin chain between sites n and n+1"""
         if n is None:
             n = self.N/2 - 1
-
-        self.left_canonicalize(n-1)
-        self.right_canonicalize(n+1)
+        self.normalize(n)
         d, chiL, chiR = self.M[n].shape # original shape of tensor
         _, S, _ = np.linalg.svd(self.M[n].reshape(d*chiL, chiR))
         assert np.abs(np.sum(np.abs(S)**2) - 1) < 1e-10
-        return -np.sum(np.abs(S)**2 * np.log(np.abs(S)**2))
+        return -np.sum(np.abs(S[np.abs(S)>0])**2 * np.log(np.abs(S[np.abs(S)>0])**2))
 
     def inner_product(self, mpsobj):
         """return a scalar result for the inner product between this MPS and another"""
@@ -108,7 +172,7 @@ class MPS(object):
             print("Number of tensors not compatible")
         
     def expectation_val(self, mpoobj):
-        """return the quadratic form of an MPS between an MPO"""
+        """return the quadratic form of an MPS between a generic MPO"""
         try:
             assert self.N == mpoobj.N
             C = np.array([[[1]]])
@@ -119,5 +183,38 @@ class MPS(object):
 
         except AssertionError:
             print("Number of tensors not compatible")
+
+    def apply_site_operator(self, n=None, op=None, normalize=False):
+        """apply a single 2 x 2 pauli type operator to site n"""
+
+        if n is None:
+            n = self.N/2
+
+        if op is None:
+            op = np.eye(self.p)
+
+        self.M[n] = np.einsum('il, ljk -> ijk', op, self.M[n], optimize=True)
+
+        if normalize:
+            self.left_canonicalize(n-1)
+            self.right_canonicalize(n+1)
+            norm = np.sum(self.M[n] ** 2)
+            self.M[n] = self.M[n] / np.sqrt(norm)
+
+
+    def measure_site_operator(self, n=None, op=None):
+        """measure the expectation value of a single 2 x 2 pauli type operator at site n"""
+
+        if n is None:
+            n = self.N/2
+
+        if op is None:
+            op = np.eye(self.p)
+
+        self.left_canonicalize(n-1)
+        self.right_canonicalize(n+1)
+
+        Braket = np.einsum('sij, tij, st -> ', self.M[n], self.M[n], op, optimize=True)
+        return Braket
 
         

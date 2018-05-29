@@ -16,11 +16,26 @@ class MPO(object):
         self.W = []
 
         # For the most generic XYZ Hamiltonian with X and Z fields
-        self.Jx = params.get("Jx", np.ones(self.N-1))
-        self.Jy = params.get("Jy", np.ones(self.N-1))
-        self.Jz = params.get("Jz", np.ones(self.N-1))
-        self.hx = params.get("hx", np.zeros(self.N))
-        self.hz = params.get("hz", np.zeros(self.N))
+        Ham = params.get("Ham", 'Heisenberg')
+        if Ham == 'Heisenberg':
+            self.Jx = np.ones(self.N-1)
+            self.Jy = np.ones(self.N-1)
+            self.Jz = np.ones(self.N-1)
+            self.hx = np.zeros(self.N)
+            self.hz = np.zeros(self.N)
+        elif Ham == 'TFIM':
+            self.Jx = np.zeros(self.N-1)
+            self.Jy = np.zeros(self.N-1)
+            self.Jz = -4*np.ones(self.N-1)
+            self.hx = -2*np.ones(self.N)
+            self.hz = np.zeros(self.N)
+        else:
+            self.Jx = params.get("Jx", np.ones(self.N-1))
+            self.Jy = params.get("Jy", np.ones(self.N-1))
+            self.Jz = params.get("Jz", np.ones(self.N-1))
+            self.hx = params.get("hx", np.zeros(self.N))
+            self.hz = params.get("hz", np.zeros(self.N))
+
 
     
     def make_MPO(self):
@@ -80,10 +95,10 @@ class MPO(object):
         except AssertionError:
             print("Number of tensors not compatible")
 
-    def get_GS(self, params={'chi': 10}, nsweep=10):
+    def get_GS(self, params={'chi': 10}, nsweep=4, tol=1e-10):
         """find the ground state of the MPO with the given parameters"""
 
-        MGS = MPS({'N': self.N, 'p': self.p, 'chi': params['chi']})
+        MGS = MPS({'N': self.N, 'p': self.p, 'chi': params['chi'], 'rand_seed': 17})
         MGS.rand_init()
         MGS.left_canonicalize()
         MGS.right_canonicalize()
@@ -94,7 +109,7 @@ class MPO(object):
             R.insert(0, np.einsum('abc, ebst, sda, tfc -> def', 
                 R[0], self.W[c], MGS.M[c], MGS.M[c], optimize=True))
 
-        lamball = []
+        lamball = [MGS.expectation_val(self)]
         
         for it in np.arange(nsweep):
 
@@ -119,7 +134,9 @@ class MPO(object):
 
                 L.append(np.einsum('abc, best, sad, tcf -> def', 
                     L[lc], self.W[lc], MGS.M[lc], MGS.M[lc], optimize=True)) # append L_c for lc=1 thru N-1
-                lamball.append(lamb[0])
+            lamball.append(lamb[0])
+            #if (lamball[-2]-lamball[-1])/lamball[-2] < tol:
+            #    break
 
             #sweep left
             R = []
@@ -142,6 +159,8 @@ class MPO(object):
                 R.insert(0, np.einsum('abc, ebst, sda, tfc -> def', 
                     R[0], self.W[lc], MGS.M[lc], MGS.M[lc], optimize=True)) # append R_c for lc=N-2 thru 0
 
-                lamball.append(lamb[0])
+            lamball.append(lamb[0])
+            #if (lamball[-2]-lamball[-1])/lamball[-2] < tol:
+            #    break
 
         return (MGS, lamball)
