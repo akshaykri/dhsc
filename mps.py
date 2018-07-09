@@ -142,10 +142,9 @@ class MPS(object):
     def normalize(self, n):
         """Normalize the MPS"""
         
-
         self.left_canonicalize(n-1)
         self.right_canonicalize(n+1)
-        norm = np.sum(self.M[n] ** 2)
+        norm = np.sum(self.M[n] * self.M[n].conj())
         self.M[n] = self.M[n] / np.sqrt(norm)
 
 
@@ -217,4 +216,79 @@ class MPS(object):
         Braket = np.einsum('sij, tij, st -> ', self.M[n], self.M[n], op, optimize=True)
         return Braket
 
-        
+    def TDVP_evolve(self, mpoobj, dt=1e-3, t_max=1):
+        """the magnum opus: Appendix B of Haegeman et al PRB 94, 165116 (2016)"""
+
+        self.right_canonicalize()
+        self.normalize()
+
+        nsweep = int(t_max / dt)
+        #TAKE COMPLEX CONJUGATES
+
+        R = []
+        R.append(np.array([[[1]]])) # R_{N-1} is trivial
+        for c in np.arange(self.N-1, 0, -1): # pre-pend R_{N-2} thru R_0
+            R.insert(0, np.einsum('abc, ebst, sda, tfc -> def', 
+                R[0], mpoobj.W[c], self.M[c], self.M[c], optimize=True))
+
+        for it in np.arange(nsweep):
+            #sweep right
+
+            L = []
+            L.append(np.array([[[1]]])) # L_0 is trivial
+            for lc in np.arange(self.N-1):
+                #this is H(n)
+                OP = np.einsum('abd, bfst, efh -> tdhsae', L[lc], mpoobj.W[lc], R[lc], optimize=True)
+                L1, L2, L3, L4, L5, L6 = OP.shape
+
+                #step 1a
+                E = scipy.sparse.linalg.expm( -0.5j * dt * scipy.sparse.csr_matrix(
+                    OP.reshape(L1*L2*L3, L4*L5*L6)) )
+                Mn = E.dot(self.M[lc].reshape(L1*L2*L3))
+
+                #step 1b
+                q, r = np.linalg.qr(Mn.reshape(L1*L2, L3))
+                self.M[lc] = q.reshape(L1, L2, L3)
+
+                #step 1c
+                #this is K(n)
+                OQ = np.einsum('tdhsae, tdp, saq -> phqe', OP, self.M[lc], self.M[lc], optimize=True)
+                K1, K2, K3, K4 = OQ.shape
+                F = scipy.sparse.linalg.expm( +0.5j * dt * scipy.sparse.csr_matrix(
+                    OQ.reshape(K1*K2, K3*K4)) )
+                rn = F.dot(r.reshape(K1*K2))
+
+                #step 1d
+                self.M[lc+1] = np.einsum('il, jlk -> jik', rn, self.M[lc+1], optimize=True)
+                self.left_can = lc
+                if lc > self.right_can-2: self.right_can = np.minimum(lc+2, self.N)
+
+                L.append(np.einsum('abc, best, sad, tcf -> def', 
+                    L[lc], mpoobj.W[lc], self.M[lc], self.M[lc], optimize=True)) # append L_c for lc=1 thru N-1
+
+            #step 2
+            HN = np.einsum('abd, bfst, efh -> tdhsae', L[self.N-1], mpoobj.W[self.N-1], R[self.N-1], optimize=True)
+            L1, L2, L3, L4, L5, L6 = HN.shape
+
+            E = scipy.sparse.linalg.expm( -1j * dt * scipy.sparse.csr_matrix(
+                    HN.reshape(L1*L2*L3, L4*L5*L6)) )
+            self.M[self.N-1] = E.dot(self.M[self.N-1].reshape(L1*L2*L3))
+
+            #step 3 left sweep
+            R = []
+            R.append(np.array([[[1]]]))
+            for rc in np.arange(self.N-2, -1, -1):
+                
+                #step 3a
+                L4, L5, L6 = self.M[rc+1].shape
+                q, r = np.linalg.qr(self.M[rc+1].transpose(0,2,1).reshape(L4*L6, L5))
+                
+                #step 3b
+                #this is K(n)
+                OQ = np.einsum(' -> phqe', L[rc+1], R[0], mpoobj.W[0], self.M[lc], self.M[lc], optimize=True)
+                K1, K2, K3, K4 = OQ.shape
+                F = scipy.sparse.linalg.expm( +0.5j * dt * scipy.sparse.csr_matrix(
+                    OQ.reshape(K1*K2, K3*K4)) )
+                rn = F.dot(r.reshape(K1*K2))
+                MGS.M[lc] = q.reshape(L4, L6, L5).transpose((0, 2, 1))
+

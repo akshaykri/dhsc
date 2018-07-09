@@ -149,6 +149,7 @@ class MPO(object):
                     OP.reshape(L1*L2*L3, L4*L5*L6)), which='SA', k=1,
                     v0=MGS.M[lc].reshape(L4*L5*L6) )
 
+                #WUBSIT? FIX THIS
                 q, r = np.linalg.qr(mat[:,0].reshape(L4, L5, L6).transpose(0,2,1).reshape(L4*L6, L5))
                 MGS.M[lc] = q.reshape(L4, L6, L5).transpose((0, 2, 1))
                 if lc > 0: #always satisfied because of how the for loop is defined
