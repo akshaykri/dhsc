@@ -258,7 +258,7 @@ class DHSC(object):
             v_z = np.zeros((self.dimH, self.N))
             for cnt in np.arange(self.dimH):
                 v_z[cnt,:] = (self.dec2spin(self.allvecs[cnt])) - 0.5 # +/- 1/2 for spin up/down
-            phase = np.exp(2j*np.pi*(np.arange(self.N)+1)/self.N)
+            phase = np.cos(2*np.pi*(np.arange(self.N)+1)/self.N)
             nMn = np.einsum('in, m, im -> n', np.abs(self.evecs)**2, phase, v_z, optimize=True)
             phase2 = phase[:, np.newaxis].conj() * phase
             nMn2 = np.einsum('in, lm, im, il -> n', np.abs(self.evecs)**2, phase2, v_z, v_z, optimize=True)
