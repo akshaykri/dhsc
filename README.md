@@ -12,7 +12,7 @@ The upshot: One can solve systems with $N = 64$, to very high accuracy (over 99.
 
 Read the report (Report.pdf) for more details, or see the other Jupyter notebook (demo.ipynb) for a demo.
 
-
+This project makes extensive use of NumPy and SciPy.
 
 Thanks to Michael Muller, who taught the course.
 
@@ -21,8 +21,3 @@ edits (June 2020):
  - added documentation
  - cleaned up some old files
 
-
-
-```python
-
-```
